@@ -1,0 +1,16 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Round {
+  id           String   @id @default(cuid())
+  startedAt    DateTime @default(now())
+  seed         String
+  participants Json
+  winner       String? 
+  log          Json
+}
