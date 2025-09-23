@@ -1,68 +1,62 @@
-// lib/solana.ts
 import { Connection, PublicKey } from "@solana/web3.js";
 
-// Public RPC ile de çalışır ama 429 riskine karşı max 2-3 çağrı yapıyoruz.
-const RPC_URL = process.env.SOLANA_RPC || "https://api.mainnet-beta.solana.com";
-export const conn = new Connection(RPC_URL, { commitment: "finalized" });
+// Basit JSON tipi, RPC response parse için
+export type Json =
+  | null
+  | boolean
+  | number
+  | string
+  | Json[]
+  | { [key: string]: Json };
 
-// basit 429 backoff
-async function retry<T>(fn: () => Promise<T>, label: string, max = 4) {
-  let delay = 800;
-  for (let i = 0; i < max; i++) {
-    try {
-      return await fn();
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      if (msg.includes("429") || msg.toLowerCase().includes("too many")) {
-        console.warn(`${label} 429 aldı, ${delay}ms bekleniyor...`);
-        await new Promise((r) => setTimeout(r, delay));
-        delay *= 2;
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw new Error(`retry(${label}) ${max} denemede başarısız`);
-}
+const endpoint =
+  process.env.SOLANA_RPC ??
+  "https://api.mainnet-beta.solana.com";
 
-export async function getLatestBlockHash(): Promise<string> {
-  const lh = await retry(() => conn.getLatestBlockhash("finalized"), "getLatestBlockhash");
-  return lh.blockhash;
+export const connection = new Connection(endpoint, "confirmed");
+
+/**
+ * RPC çağrısı örneği: generic fetch
+ */
+async function fetchJson<T = Json>(url: string): Promise<T> {
+  const resp: unknown = await fetch(url).then((r) => r.json());
+  return resp as T;
 }
 
 /**
- * Mint'e ait holder'ları PARSED olarak getirir.
- * Tek RPC çağrısı: getParsedProgramAccounts + memcmp(mint)
- * Dönen veri: owner (cüzdan), tokenAmount.uiAmount (bakiyenin UI karşılığı)
- * Büyük mintlerde çok hesap dönebilir; cap ile sınırlandır.
+ * Token hesabı çözümleme örneği
  */
-export async function getHoldersByRPC(mint: string, cap = 800) {
-  const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"); // SPL Token Program
-  const mintPk = new PublicKey(mint);
-
-  const accounts = await retry(
-    () =>
-      conn.getParsedProgramAccounts(TOKEN_PROGRAM_ID, {
-        filters: [
-          { dataSize: 165 }, // SPL Token Account boyutu
-          { memcmp: { offset: 0, bytes: mintPk.toBase58() } }, // 0-32: mint
-        ],
-      }),
-    "getParsedProgramAccounts(mint)"
-  );
-
-  const out: { owner: string; tokenAmount: number }[] = [];
-  for (const acc of accounts) {
-    try {
-      const parsed: any = (acc.account as any).data?.parsed?.info;
-      const owner = parsed?.owner;
-      const ui = parsed?.tokenAmount?.uiAmount;
-      if (owner && typeof ui === "number" && ui > 0) {
-        out.push({ owner: owner.toLowerCase(), tokenAmount: ui });
-      }
-    } catch {}
+export async function getParsedAccount(pubkey: string) {
+  try {
+    const key = new PublicKey(pubkey);
+    const acc = await connection.getParsedAccountInfo(key);
+    return acc.value;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "unknown";
+    throw new Error(`getParsedAccount failed: ${msg}`);
   }
+}
 
-  // Çok büyük listelerde performans için sınır koy
-  return out.slice(0, cap);
+/**
+ * RPC response decode (önce any idi)
+ */
+export function decodeResponse(resp: unknown) {
+  if (typeof resp !== "object" || resp === null) return null;
+  if (!("result" in resp)) return null;
+  const result = (resp as { result: Json }).result;
+  return result;
+}
+
+/**
+ * Örnek: Program accounts parse
+ */
+export async function getProgramAccounts(programId: string) {
+  try {
+    const pid = new PublicKey(programId);
+    const accounts = await connection.getParsedProgramAccounts(pid);
+    return accounts;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "unknown";
+    throw new Error(`getProgramAccounts failed: ${msg}`);
+  }
 }

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { getAllHolders } from "../../../../lib/oracles"; // mevcut fonksiyonun
+import { getAllHolders } from "../../../../lib/oracles";
 
-// ---------------- In-memory Cache & Single-Flight ----------------
+// ---- Basit in-memory cache & single-flight ----
 type Cache = {
   ids: string[];
   updatedAt: number; // ms
@@ -10,9 +10,12 @@ type Cache = {
 let cache: Cache | null = null;
 let inFlight: Promise<string[]> | null = null;
 
-// ---------------- Tunables (ENV ile override edilebilir) --------
-const TTL_MS = Number(process.env.WALLETS_TTL_MS ?? 30_000);      // 30s
-const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS ?? 8_000); // 8s
+// ---- Ayarlar (ENV ile override edilebilir) ----
+const TTL_MS = Number(process.env.WALLETS_TTL_MS ?? 30_000);
+const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS ?? 8_000);
+
+// Basit JSON tipi (unknown daraltmalarında yardımcı)
+type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -22,25 +25,17 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-// getAllHolders bazı ortamlarda string[],
-// bazılarında {addr:string; balance:number}[] dönebiliyor.
-// Burada normalize ediyoruz:
+// getAllHolders bazen string[] bazen {addr, balance}[] dönebilir → normalize et
 function normalizeToIds(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-  if (input.length === 0) return [];
+  if (!Array.isArray(input) || input.length === 0) return [];
   const first = input[0];
 
-  // string[] yolu
   if (typeof first === "string") {
     return (input as string[]).filter(Boolean);
   }
-
-  // {addr:string}[] yolu
-  if (typeof first === "object" && first && "addr" in (first as any)) {
+  if (typeof first === "object" && first !== null && "addr" in (first as Record<string, unknown>)) {
     return (input as Array<{ addr: string }>).map((h) => h.addr).filter(Boolean);
   }
-
-  // bilinmeyen şekil
   return [];
 }
 
@@ -48,43 +43,41 @@ async function fetchHoldersOnce(): Promise<string[]> {
   const mint = process.env.TOKEN_MINT!;
   const raw = await withTimeout(getAllHolders(mint), RPC_TIMEOUT_MS);
   const ids = normalizeToIds(raw);
-  // tekrar edenleri temizle
-  return Array.from(new Set(ids));
+  return Array.from(new Set(ids)); // uniq
 }
 
 export async function GET() {
   try {
     const now = Date.now();
 
-    // 1) Cache taze ise doğrudan dön
+    // 1) Taze cache varsa doğrudan dön
     if (cache && now - cache.updatedAt < TTL_MS) {
       return NextResponse.json({
         ok: true,
         ids: cache.ids,
         stale: !!cache.stale,
         cached: true,
-        ttlMs: TTL_MS - (now - cache.updatedAt),
+        ttlMs: Math.max(0, TTL_MS - (now - cache.updatedAt)),
       });
     }
 
-    // 2) Hâlihazırda bir RPC çağrısı varsa ona eklemlen
+    // 2) Hâlihazırda RPC uçuşu varsa ona eklemlen
     if (inFlight) {
       try {
         const ids = await inFlight;
         cache = { ids, updatedAt: Date.now(), stale: false };
         return NextResponse.json({ ok: true, ids, stale: false, joined: true });
       } catch {
-        // inFlight patlarsa stale kontrolüne düşeceğiz
+        // aşağıda stale kontrolü yapılacak
       }
     }
 
-    // 3) Yeni RPC çağrısını başlat (single-flight)
+    // 3) Yeni single-flight RPC çağrısını başlat
     inFlight = (async () => {
       try {
         const ids = await fetchHoldersOnce();
         return ids;
       } finally {
-        // iş bittiğinde single-flight slotunu serbest bırak
         setTimeout(() => { inFlight = null; }, 0);
       }
     })();
@@ -93,15 +86,17 @@ export async function GET() {
       const ids = await inFlight;
       cache = { ids, updatedAt: Date.now(), stale: false };
       return NextResponse.json({ ok: true, ids, stale: false });
-    } catch (e: any) {
-      // RPC başarısız → stale varsa onu 200 ile döndür
+    } catch (e: unknown) {
+      // RPC patladı → stale varsa onunla dön, yoksa 503
       if (cache && cache.ids?.length) {
         cache.stale = true;
         return NextResponse.json({ ok: true, ids: cache.ids, stale: true }, { status: 200 });
       }
-      return NextResponse.json({ ok: false, error: e?.message ?? "rpc-failed" }, { status: 503 });
+      const msg = e instanceof Error ? e.message : "rpc-failed";
+      return NextResponse.json({ ok: false, error: msg }, { status: 503 });
     }
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? "internal" }, { status: 500 });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "internal";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
