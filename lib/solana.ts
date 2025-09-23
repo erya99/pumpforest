@@ -9,22 +9,14 @@ export type Json =
   | Json[]
   | { [key: string]: Json };
 
+// RPC endpoint ve bağlantı
 const endpoint =
-  process.env.SOLANA_RPC ??
-  "https://api.mainnet-beta.solana.com";
+  process.env.SOLANA_RPC ?? "https://api.mainnet-beta.solana.com";
 
 export const connection = new Connection(endpoint, "confirmed");
 
 /**
- * RPC çağrısı örneği: generic fetch
- */
-async function fetchJson<T = Json>(url: string): Promise<T> {
-  const resp: unknown = await fetch(url).then((r) => r.json());
-  return resp as T;
-}
-
-/**
- * Token hesabı çözümleme örneği
+ * Token hesabı çözümleme
  */
 export async function getParsedAccount(pubkey: string) {
   try {
@@ -38,7 +30,7 @@ export async function getParsedAccount(pubkey: string) {
 }
 
 /**
- * RPC response decode (önce any idi)
+ * RPC yanıtını decode etme (any → unknown + Json)
  */
 export function decodeResponse(resp: unknown) {
   if (typeof resp !== "object" || resp === null) return null;
@@ -48,7 +40,7 @@ export function decodeResponse(resp: unknown) {
 }
 
 /**
- * Örnek: Program accounts parse
+ * Program accounts parse etme
  */
 export async function getProgramAccounts(programId: string) {
   try {
@@ -58,5 +50,31 @@ export async function getProgramAccounts(programId: string) {
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "unknown";
     throw new Error(`getProgramAccounts failed: ${msg}`);
+  }
+}
+
+/**
+ * Holder'ları doğrudan RPC'den çekmek için fonksiyon
+ */
+export async function getHoldersByRPC(mint: string): Promise<string[]> {
+  try {
+    const mintKey = new PublicKey(mint);
+    const accounts = await connection.getParsedProgramAccounts(mintKey);
+    return accounts.map((acc) => acc.pubkey.toBase58());
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "unknown";
+    throw new Error(`getHoldersByRPC failed: ${msg}`);
+  }
+}
+
+/**
+ * En son blok hash’i almak için fonksiyon
+ */
+export async function getLatestBlockHash() {
+  try {
+    return await connection.getLatestBlockhash("finalized");
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "unknown";
+    throw new Error(`getLatestBlockHash failed: ${msg}`);
   }
 }
