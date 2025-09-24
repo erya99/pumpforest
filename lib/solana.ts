@@ -17,6 +17,26 @@ const endpoint =
 
 export const connection = new Connection(endpoint, "confirmed");
 
+// ---- SPL-Token parsed data tipleri (any kullanmadan) ----
+type TokenAmount = {
+  amount: string;            // ham miktar (string)
+  decimals?: number;
+  uiAmount?: number | null;
+  uiAmountString?: string;
+};
+
+type ParsedTokenAccountInfo = {
+  owner: string;
+  state?: "initialized" | "uninitialized" | string;
+  tokenAmount?: TokenAmount;
+  // başka alanlar olabilir; lazım değilse eklemiyoruz
+};
+
+type SPLParsed = {
+  type: string;              // "account" vb.
+  info: ParsedTokenAccountInfo;
+};
+
 /**
  * Mint'e ait token hesaplarını RPC üzerinden çeker.
  * - Yalnızca state=initialized olanları alır.
@@ -44,14 +64,15 @@ export async function getHoldersByRPC(mint: string): Promise<string[]> {
   for (const acc of accounts) {
     const data = acc.account.data as ParsedAccountData;
     if (!data || data.program !== "spl-token") continue;
-    const info = (data.parsed as any)?.info;
+
+    // any yerine tip daraltma
+    const parsed = data.parsed as unknown as SPLParsed | undefined;
+    const info = parsed?.info;
     if (!info) continue;
 
-    // yalnızca aktif hesaplar
     if (info.state !== "initialized") continue;
 
-    // bakiyeyi kontrol et
-    const amountStr: string | undefined = info?.tokenAmount?.amount;
+    const amountStr: string | undefined = info.tokenAmount?.amount;
     if (!amountStr) continue;
 
     let isZero = false;
@@ -67,7 +88,7 @@ export async function getHoldersByRPC(mint: string): Promise<string[]> {
     }
     if (isZero) continue;
 
-    const owner: string | undefined = info.owner;
+    const owner = info.owner;
     if (typeof owner === "string" && owner.length > 0) {
       owners.add(owner);
     }
