@@ -30,7 +30,12 @@ export default function WalletForest() {
   const treeImgRef = useRef<HTMLImageElement | null>(null);
   const animRef = useRef<number | null>(null);
   const lastTsRef = useRef<number>(0);
+
+  // Görsel kaynak notu (debug)
   const [activeSource, setActiveSource] = useState<Source | null>(null);
+
+  // ✅ Sadece gerçek holder’ların tutulduğu authoritative set
+  const authoritativeIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const c = canvasRef.current!;
@@ -61,8 +66,8 @@ export default function WalletForest() {
     tree.onload = () => (treeImgRef.current = tree);
   }, []);
 
-  async function fetchAddresses(): Promise<string[]> {
-    // 1. wallets/current
+  // Yardımcı fetch’ler
+  async function fetchWalletsCurrent(): Promise<string[]> {
     try {
       const r = await fetch('/api/wallets/current', { cache: 'no-store' });
       if (r.ok) {
@@ -70,15 +75,14 @@ export default function WalletForest() {
         const ids = Array.isArray(j?.ids)
           ? j.ids
           : ((j?.holders as HolderLite[] | undefined)?.map(h => h.addr) ?? []);
-        if (ids.length > 0) {
-          console.log("Fetched from wallets/current", ids.length);
-          setActiveSource('wallets_current');
-          return ids;
-        }
+        if (ids.length > 0) setActiveSource('wallets_current');
+        return ids;
       }
     } catch {}
+    return [];
+  }
 
-    // 2. debug/holders
+  async function fetchDebugHolders(): Promise<string[]> {
     try {
       const r = await fetch('/api/debug/holders', { cache: 'no-store' });
       if (r.ok) {
@@ -86,31 +90,27 @@ export default function WalletForest() {
         const ids = Array.isArray(j?.ids)
           ? j.ids
           : ((j?.holders as HolderLite[] | undefined)?.map(h => h.addr) ?? []);
-        if (ids.length > 0) {
-          console.log("Fetched from debug/holders", ids.length);
-          setActiveSource('debug_holders');
-          return ids;
-        }
+        if (ids.length > 0) setActiveSource('debug_holders');
+        return ids;
       }
     } catch {}
+    return [];
+  }
 
-    // 3. rounds/latest
+  async function fetchRoundsParticipants(): Promise<string[]> {
     try {
       const r = await fetch('/api/rounds/latest', { cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
         const ids: string[] = j?.round?.participants ?? [];
-        if (ids.length > 0) {
-          console.log("Fetched from rounds/latest", ids.length);
-          setActiveSource('rounds_latest');
-          return ids;
-        }
+        if (ids.length > 0) setActiveSource('rounds_latest');
+        return ids;
       }
     } catch {}
-
     return [];
   }
 
+  // Pozisyonlama: merkezden dışa spiral
   function addTree(id: string) {
     if (treesRef.current.has(id)) return;
     const c = canvasRef.current!;
@@ -121,7 +121,7 @@ export default function WalletForest() {
     const cy = viewH / 2;
 
     const size = 16;
-    const index = treesRef.current.size;
+    const index = treesRef.current.size; // mevcut ağaç sayısına göre spiral
     const radius = index === 0 ? 0 : SPACING * Math.sqrt(index);
     const angle = index * GOLDEN_ANGLE;
 
@@ -145,19 +145,40 @@ export default function WalletForest() {
     t.removeAt = performance.now();
   }
 
+  // Ana polling döngüsü
   useEffect(() => {
     let stop = false;
     (async function loop() {
       while (!stop) {
         try {
-          const ids = await fetchAddresses();
-          const uniqueIds = [...new Set(ids)]; // 🔑 duplicate temizlendi
+          // 1) Otorite kaynaklar: wallets_current → boşsa debug_holders
+          const wc = await fetchWalletsCurrent();
+          let authoritative: string[] = wc;
+          if (authoritative.length === 0) {
+            const dbg = await fetchDebugHolders();
+            if (dbg.length > 0) authoritative = dbg;
+          }
 
-          for (const id of uniqueIds) {
+          // authoritative set’i güncelle (boşsa önceki değeri koru)
+          if (authoritative.length > 0) {
+            authoritativeIdsRef.current = new Set(authoritative);
+          }
+
+          // 2) Görsel zenginlik için rounds (opsiyonel)
+          const rnd = await fetchRoundsParticipants();
+
+          // 3) Çizim için birleşik id’ler
+          const unionIds = new Set<string>([
+            ...authoritativeIdsRef.current,
+            ...rnd,
+          ]);
+
+          // 4) Ağaç ekle/çıkar (sadece union’a göre)
+          for (const id of unionIds) {
             if (!treesRef.current.has(id)) addTree(id);
           }
           for (const [id] of treesRef.current) {
-            if (!uniqueIds.includes(id)) removeTree(id);
+            if (!unionIds.has(id)) removeTree(id);
           }
         } catch {}
         await new Promise((r) => setTimeout(r, POLL_MS));
@@ -215,12 +236,15 @@ export default function WalletForest() {
         if (treeImgRef.current) drawTree(ctx, t, treeImgRef.current);
       }
 
+      // ✅ Sayaç: sadece authoritative (gerçek holders)
+      const walletCount = authoritativeIdsRef.current.size;
+
       ctx.save();
       ctx.globalAlpha = 0.95;
       ctx.font = '48px Inter, Arial';
       ctx.fillStyle = '#000000ff';
       ctx.textAlign = 'center';
-      ctx.fillText(`Wallets: ${treesRef.current.size}`, viewW / 2, 30);
+      ctx.fillText(`Wallets: ${walletCount}`, viewW / 4, 22);
       ctx.restore();
 
       ctx.save();
@@ -229,7 +253,7 @@ export default function WalletForest() {
       ctx.fillStyle = '#020202ff';
       ctx.textAlign = 'center';
       ctx.fillText(`For every 50 wallets, we will donate 1 tree.`, viewW / 8, 44);
-      ctx.fillText(`Current number of donated trees: ${Math.floor(treesRef.current.size / 50)}`, viewW / 8, 64);
+      ctx.fillText(`Current number of donated trees: ${Math.floor(walletCount / 50)}`, viewW / 8, 64);
       ctx.restore();
 
       if (activeSource) {
