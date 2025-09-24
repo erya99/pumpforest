@@ -1,18 +1,26 @@
-// lib/oracles.ts
-import { getHoldersByRPC, getLatestBlockHash as _getLatestBlockHash } from "./solana";
+import { getHoldersByRPC } from "./solana";
+import { getAllTokenHoldersPaged, HolderLite } from "./solscan";
 
-/** Tüm holder’ları RPC’den (parsed) getirir — USD filtresi YOK, Solscan YOK */
-export async function getAllHolders(mint: string) {
-  const raw = await getHoldersByRPC(mint);
+type OracleHolder = { owner: string; tokenAmount: number };
 
-  // tekilleştir (aynı owner'ın birden çok token hesabı olabilir → en büyük bakiyeyi tut)
-  const byAddr = new Map<string, number>();
-  for (const h of raw) {
-    const prev = byAddr.get(h.owner) || 0;
-    if (h.tokenAmount > prev) byAddr.set(h.owner, h.tokenAmount);
+/**
+ * Tüm holder’ları çek (RPC veya Solscan)
+ */
+export async function getAllHolders(mint: string): Promise<OracleHolder[]> {
+  try {
+    // Solscan kullanmak istersen:
+    const holders: HolderLite[] = await getAllTokenHoldersPaged(mint, 100, 50);
+
+    return holders.map((h) => ({
+      owner: h.addr,
+      tokenAmount: h.balance,
+    }));
+  } catch (e) {
+    // RPC fallback
+    const rpcHolders: string[] = await getHoldersByRPC(mint);
+    return rpcHolders.map((addr) => ({
+      owner: addr,
+      tokenAmount: 0, // RPC ile balance gelmiyorsa 0 bırak
+    }));
   }
-
-  return Array.from(byAddr.entries()).map(([addr, balance]) => ({ addr, balance }));
 }
-
-export const getLatestBlockHash = _getLatestBlockHash;
