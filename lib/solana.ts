@@ -1,6 +1,10 @@
-import { Connection, PublicKey } from "@solana/web3.js";
+import {
+  Connection,
+  PublicKey,
+  ParsedAccountData,
+} from "@solana/web3.js";
 
-// Basit JSON tipi, RPC response parse için
+// Basit JSON tipi (gerekirse)
 export type Json =
   | null
   | boolean
@@ -9,29 +13,18 @@ export type Json =
   | Json[]
   | { [key: string]: Json };
 
-// RPC endpoint ve bağlantı
 const endpoint =
   process.env.SOLANA_RPC ?? "https://api.mainnet-beta.solana.com";
 
 export const connection = new Connection(endpoint, "confirmed");
 
-/**
- * Token hesabı çözümleme
- */
+// ----------------- Yardımcılar -----------------
 export async function getParsedAccount(pubkey: string) {
-  try {
-    const key = new PublicKey(pubkey);
-    const acc = await connection.getParsedAccountInfo(key);
-    return acc.value;
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "unknown";
-    throw new Error(`getParsedAccount failed: ${msg}`);
-  }
+  const key = new PublicKey(pubkey);
+  const acc = await connection.getParsedAccountInfo(key);
+  return acc.value;
 }
 
-/**
- * RPC yanıtını decode etme (any → unknown + Json)
- */
 export function decodeResponse(resp: unknown) {
   if (typeof resp !== "object" || resp === null) return null;
   if (!("result" in resp)) return null;
@@ -39,42 +32,51 @@ export function decodeResponse(resp: unknown) {
   return result;
 }
 
+// ----------------- DOĞRU HOLDER SORGUSU -----------------
 /**
- * Program accounts parse etme
- */
-export async function getProgramAccounts(programId: string) {
-  try {
-    const pid = new PublicKey(programId);
-    const accounts = await connection.getParsedProgramAccounts(pid);
-    return accounts;
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "unknown";
-    throw new Error(`getProgramAccounts failed: ${msg}`);
-  }
-}
-
-/**
- * Holder'ları doğrudan RPC'den çekmek için fonksiyon
+ * Mint'e ait token hesaplarını Token Program üzerinde filtreleyip,
+ * parsed info içinden "owner" (cüzdan) adreslerini çıkarır.
  */
 export async function getHoldersByRPC(mint: string): Promise<string[]> {
-  try {
-    const mintKey = new PublicKey(mint);
-    const accounts = await connection.getParsedProgramAccounts(mintKey);
-    return accounts.map((acc) => acc.pubkey.toBase58());
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "unknown";
-    throw new Error(`getHoldersByRPC failed: ${msg}`);
+  const mintKey = new PublicKey(mint);
+  // SPL Token Program ID
+  const TOKEN_PROGRAM_ID = new PublicKey(
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  );
+
+  // Token account layout: mint offset'i 0, data size 165
+  const accounts = await connection.getParsedProgramAccounts(
+    TOKEN_PROGRAM_ID,
+    {
+      filters: [
+        { dataSize: 165 },
+        { memcmp: { offset: 0, bytes: mintKey.toBase58() } },
+      ],
+    }
+  );
+
+  const owners: string[] = [];
+  for (const acc of accounts) {
+    const data = acc.account.data as ParsedAccountData;
+    if (
+      data?.program === "spl-token" &&
+      data?.parsed?.info &&
+      typeof data.parsed.info.owner === "string"
+    ) {
+      owners.push(data.parsed.info.owner);
+    }
   }
+
+  // Tekilleştir
+  return Array.from(new Set(owners));
 }
 
-/**
- * En son blok hash’i almak için fonksiyon
- */
+export async function getProgramAccounts(programId: string) {
+  const pid = new PublicKey(programId);
+  const accounts = await connection.getParsedProgramAccounts(pid);
+  return accounts;
+}
+
 export async function getLatestBlockHash() {
-  try {
-    return await connection.getLatestBlockhash("finalized");
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "unknown";
-    throw new Error(`getLatestBlockHash failed: ${msg}`);
-  }
+  return connection.getLatestBlockhash("finalized");
 }
