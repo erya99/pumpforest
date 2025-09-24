@@ -62,35 +62,52 @@ export default function WalletForest() {
   }, []);
 
   async function fetchAddresses(): Promise<string[]> {
+    // 1. wallets/current
     try {
       const r = await fetch('/api/wallets/current', { cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
-        setActiveSource('wallets_current');
-        return Array.isArray(j?.ids)
+        const ids = Array.isArray(j?.ids)
           ? j.ids
           : ((j?.holders as HolderLite[] | undefined)?.map(h => h.addr) ?? []);
+        if (ids.length > 0) {
+          console.log("Fetched from wallets/current", ids);
+          setActiveSource('wallets_current');
+          return ids;
+        }
       }
     } catch {}
+
+    // 2. debug/holders
     try {
       const r = await fetch('/api/debug/holders', { cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
-        setActiveSource('debug_holders');
-        return Array.isArray(j?.ids)
+        const ids = Array.isArray(j?.ids)
           ? j.ids
           : ((j?.holders as HolderLite[] | undefined)?.map(h => h.addr) ?? []);
+        if (ids.length > 0) {
+          console.log("Fetched from debug/holders", ids);
+          setActiveSource('debug_holders');
+          return ids;
+        }
       }
     } catch {}
+
+    // 3. rounds/latest
     try {
       const r = await fetch('/api/rounds/latest', { cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
-        const ids = j?.round?.participants ?? [];
-        setActiveSource('rounds_latest');
-        return ids;
+        const ids: string[] = j?.round?.participants ?? [];
+        if (ids.length > 0) {
+          console.log("Fetched from rounds/latest", ids);
+          setActiveSource('rounds_latest');
+          return ids;
+        }
       }
     } catch {}
+
     return [];
   }
 
@@ -198,10 +215,10 @@ export default function WalletForest() {
 
       ctx.save();
       ctx.globalAlpha = 0.95;
-      ctx.font = '14px Inter, Arial';
-      ctx.fillStyle = '#ffffff';
+      ctx.font = '48px Inter, Arial';
+      ctx.fillStyle = '#000000ff';
       ctx.textAlign = 'center';
-      ctx.fillText(`Cüzdan Sayısı: ${treesRef.current.size}`, viewW / 2, 22);
+      ctx.fillText(`Wallets: ${treesRef.current.size}`, viewW / 4, 22);
       ctx.restore();
 
       ctx.save();
@@ -216,7 +233,7 @@ export default function WalletForest() {
       if (activeSource) {
         ctx.save();
         ctx.globalAlpha = 0.85;
-        ctx.font = '1px Inter, Arial';
+        ctx.font = '12px Inter, Arial';
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'left';
         ctx.fillText(`source: ${activeSource}`, 12, 20);
