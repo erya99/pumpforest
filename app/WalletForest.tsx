@@ -1,18 +1,29 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 
 type Source = 'wallets_current' | 'debug_holders' | 'rounds_latest';
 
 type Tree = {
   id: string;
+  // yerleşim
   x: number;
   y: number;
   size: number;
   currentSize: number;
   alpha: number;
+
+  // animasyon durumları
   removing?: boolean;
   removeAt?: number;
+
+  // rüzgâr (salınım) için
+  phase: number;      // rastgele başlangıç fazı
+  swayAmp: number;    // px cinsinden genlik
+  swaySpeed: number;  // hız katsayısı
+
+  // topraktan çıkma (büyüme) için
+  grow: number;       // 0..1
 };
 
 type HolderLite = { addr: string; balance?: number };
@@ -25,7 +36,6 @@ const TREE_URL = '/tree.png';
 const POLL_MS = 15000 + Math.floor(Math.random() * 5000);
 
 // Ekranda daha çok ağaç barındırmak için hücre ve çizim boyutları
-// (sprite 16x16 ama ekrana 12px olarak çiziyoruz; aralık 14px)
 const TREE_DRAW_SIZE = 12; // ekrana çizilen ağaç boyutu
 const CELL = 14;           // grid hücre adımı (px)
 
@@ -124,42 +134,23 @@ export default function WalletForest() {
   }
 
   // ---- kare spiral: merkezden dikdörtgen genişleme ----
-  // i=0 (0,0), sonra sağ 1, yukarı 1, sol 2, aşağı 2, sağ 3, ...
   function squareSpiral(i: number): { gx: number; gy: number } {
     if (i === 0) return { gx: 0, gy: 0 };
     let x = 0, y = 0;
     let step = 1;
     let n = 0;
-
-    // her döngüde iki yön (sağ&yukarı, sol&aşağı) ile step ilerlenir, sonra step++
     while (true) {
-      // sağ
-      for (let k = 0; k < step; k++) {
-        x += 1; n++;
-        if (n === i) return { gx: x, gy: y };
-      }
-      // yukarı
-      for (let k = 0; k < step; k++) {
-        y -= 1; n++;
-        if (n === i) return { gx: x, gy: y };
-      }
+      for (let k = 0; k < step; k++) { x += 1; n++; if (n === i) return { gx: x, gy: y }; }
+      for (let k = 0; k < step; k++) { y -= 1; n++; if (n === i) return { gx: x, gy: y }; }
       step++;
-      // sol
-      for (let k = 0; k < step; k++) {
-        x -= 1; n++;
-        if (n === i) return { gx: x, gy: y };
-      }
-      // aşağı
-      for (let k = 0; k < step; k++) {
-        y += 1; n++;
-        if (n === i) return { gx: x, gy: y };
-      }
+      for (let k = 0; k < step; k++) { x -= 1; n++; if (n === i) return { gx: x, gy: y }; }
+      for (let k = 0; k < step; k++) { y += 1; n++; if (n === i) return { gx: x, gy: y }; }
       step++;
     }
   }
 
   // ---- ağaç ekleme (dikdörtgen düzen) ----
-  function addTree(id: string) {
+  const addTree = useCallback((id: string) => {
     if (treesRef.current.has(id)) return;
 
     const c = canvasRef.current!;
@@ -169,7 +160,7 @@ export default function WalletForest() {
     const cx = viewW / 2;
     const cy = viewH / 2;
 
-    const index = treesRef.current.size; // kaçıncı ağaç
+    const index = treesRef.current.size;
     const { gx, gy } = squareSpiral(index);
 
     const x = cx + gx * CELL;
@@ -182,15 +173,21 @@ export default function WalletForest() {
       size: TREE_DRAW_SIZE,
       currentSize: Math.max(2, TREE_DRAW_SIZE * 0.4),
       alpha: 0,
-    });
-  }
 
-  function removeTree(id: string) {
+      // animasyon
+      phase: Math.random() * Math.PI * 2,
+      swayAmp: 0.6 + Math.random() * 0.9,  // 0.6–1.5px
+      swaySpeed: 0.5 + Math.random() * 0.8, // 0.5–1.3
+      grow: 0,
+    });
+  }, []);
+
+  const removeTree = useCallback((id: string) => {
     const t = treesRef.current.get(id);
     if (!t) return;
     t.removing = true;
     t.removeAt = performance.now();
-  }
+  }, []);
 
   // ---- polling döngüsü ----
   useEffect(() => {
@@ -230,24 +227,37 @@ export default function WalletForest() {
       }
     })();
     return () => { stop = true; };
-  }, []);
+  }, [addTree, removeTree]);
 
   // ---- çizim yardımcıları ----
-  function drawTree(ctx: CanvasRenderingContext2D, t: Tree, sprite: HTMLImageElement) {
+  function drawTree(
+    ctx: CanvasRenderingContext2D,
+    t: Tree,
+    sprite: HTMLImageElement,
+    timeSec: number
+  ) {
     ctx.save();
-    ctx.globalAlpha = t.alpha;
-    const s = t.currentSize;
+
+    // rüzgâr salınımı (x ofseti)
+    const sway = Math.sin(timeSec * t.swaySpeed + t.phase) * t.swayAmp;
+
+    // topraktan çıkma: easeOutCubic ile y ofseti ve boyut büyümesi
+    const g = Math.min(1, t.grow);
+    const ease = 1 - Math.pow(1 - g, 3); // 0→1
+    const rise = (1 - ease) * 6;         // 6px aşağıdan başla
+
+    const s = t.currentSize * (0.9 + 0.1 * ease); // ilk başta biraz küçük
     const half = s / 2;
-    // spritesheet 16x16, ekrana s×s
-    ctx.drawImage(sprite, 0, 0, 16, 16, t.x - half, t.y - half, s, s);
+
+    ctx.globalAlpha = t.alpha;
+    ctx.drawImage(sprite, 0, 0, 16, 16, t.x - half + sway, t.y - half + rise, s, s);
     ctx.restore();
   }
 
-  function drawHUD(ctx: CanvasRenderingContext2D, viewW: number) {
+  const drawHUD = useCallback((ctx: CanvasRenderingContext2D, viewW: number) => {
     const walletCount = authoritativeIdsRef.current.size;
     const donated = Math.floor(walletCount / 50);
 
-    // panel ölçüsü
     const boxW = Math.min(380, viewW - 2 * HUD_PADDING);
     const boxH = 96;
     const x = HUD_PADDING;
@@ -280,10 +290,9 @@ export default function WalletForest() {
 
     ctx.font = '14px Inter, Arial';
     ctx.fillText(`Current number of donated trees: ${donated}`, x + 16, y + 74);
-
     ctx.restore();
 
-    // kaynak etiketi (küçük, sol üstte)
+    // kaynak etiketi
     if (typeof activeSource === 'string') {
       ctx.save();
       ctx.globalAlpha = 0.85;
@@ -293,16 +302,11 @@ export default function WalletForest() {
       ctx.fillText(`source: ${activeSource}`, x + 16, y - 6);
       ctx.restore();
     }
-  }
+  }, [activeSource]);
 
-  // yuvarlak köşeli dikdörtgen yardımcı
   function roundRect(
     ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    r: number
+    x: number, y: number, w: number, h: number, r: number
   ) {
     const rr = Math.min(r, w / 2, h / 2);
     ctx.moveTo(x + rr, y);
@@ -322,6 +326,7 @@ export default function WalletForest() {
     function draw(ts: number) {
       const dt = ts - (lastTsRef.current || ts);
       lastTsRef.current = ts;
+      const tsec = ts / 1000;
 
       const viewW = c.width / dpr;
       const viewH = c.height / dpr;
@@ -342,9 +347,12 @@ export default function WalletForest() {
       const now = performance.now();
       for (const t of Array.from(treesRef.current.values())) {
         if (!t.removing) {
+          // büyüme ve görünürlük
           t.currentSize += (t.size - t.currentSize) * Math.min(0.25, 0.08 + (dt / 1000) * 0.35);
           t.alpha += (1 - t.alpha) * 0.12;
+          t.grow = Math.min(1, t.grow + dt * 0.0025); // ~0.4s'de tamam
         } else {
+          // fade-out
           const elapsed = now - (t.removeAt || now);
           t.alpha = Math.max(0, 1 - elapsed / 400);
           t.currentSize = Math.max(2, t.currentSize * 0.96);
@@ -353,7 +361,7 @@ export default function WalletForest() {
             continue;
           }
         }
-        if (treeImgRef.current) drawTree(ctx, t, treeImgRef.current);
+        if (treeImgRef.current) drawTree(ctx, t, treeImgRef.current, tsec);
       }
 
       // HUD
@@ -366,7 +374,7 @@ export default function WalletForest() {
     return () => {
       if (animRef.current) cancelAnimationFrame(animRef.current);
     };
-  }, [activeSource]);
+  }, [drawHUD]);
 
   return (
     <canvas
