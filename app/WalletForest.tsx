@@ -71,7 +71,7 @@ export default function WalletForest() {
           ? j.ids
           : ((j?.holders as HolderLite[] | undefined)?.map(h => h.addr) ?? []);
         if (ids.length > 0) {
-          console.log("Fetched from wallets/current", ids);
+          console.log("Fetched from wallets/current", ids.length);
           setActiveSource('wallets_current');
           return ids;
         }
@@ -87,7 +87,7 @@ export default function WalletForest() {
           ? j.ids
           : ((j?.holders as HolderLite[] | undefined)?.map(h => h.addr) ?? []);
         if (ids.length > 0) {
-          console.log("Fetched from debug/holders", ids);
+          console.log("Fetched from debug/holders", ids.length);
           setActiveSource('debug_holders');
           return ids;
         }
@@ -101,7 +101,7 @@ export default function WalletForest() {
         const j = await r.json();
         const ids: string[] = j?.round?.participants ?? [];
         if (ids.length > 0) {
-          console.log("Fetched from rounds/latest", ids);
+          console.log("Fetched from rounds/latest", ids.length);
           setActiveSource('rounds_latest');
           return ids;
         }
@@ -151,11 +151,13 @@ export default function WalletForest() {
       while (!stop) {
         try {
           const ids = await fetchAddresses();
-          for (const id of ids) {
+          const uniqueIds = [...new Set(ids)]; // 🔑 duplicate temizlendi
+
+          for (const id of uniqueIds) {
             if (!treesRef.current.has(id)) addTree(id);
           }
           for (const [id] of treesRef.current) {
-            if (!ids.includes(id)) removeTree(id);
+            if (!uniqueIds.includes(id)) removeTree(id);
           }
         } catch {}
         await new Promise((r) => setTimeout(r, POLL_MS));
@@ -218,7 +220,7 @@ export default function WalletForest() {
       ctx.font = '48px Inter, Arial';
       ctx.fillStyle = '#000000ff';
       ctx.textAlign = 'center';
-      ctx.fillText(`Wallets: ${treesRef.current.size}`, viewW / 4, 22);
+      ctx.fillText(`Wallets: ${treesRef.current.size}`, viewW / 2, 30);
       ctx.restore();
 
       ctx.save();
@@ -227,7 +229,7 @@ export default function WalletForest() {
       ctx.fillStyle = '#020202ff';
       ctx.textAlign = 'center';
       ctx.fillText(`For every 50 wallets, we will donate 1 tree.`, viewW / 8, 44);
-      ctx.fillText(`Current number of donated trees: 0`, viewW / 8, 64);
+      ctx.fillText(`Current number of donated trees: ${Math.floor(treesRef.current.size / 50)}`, viewW / 8, 64);
       ctx.restore();
 
       if (activeSource) {
